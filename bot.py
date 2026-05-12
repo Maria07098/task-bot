@@ -58,7 +58,7 @@ TITLE, TASK_TYPE, SIZE, PRIORITY, WHY, DEADLINE = range(6)
 # ── Database ──────────────────────────────────────────────────────────────────
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, isolation_level=None)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -589,3 +589,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
