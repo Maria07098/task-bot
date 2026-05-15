@@ -65,30 +65,31 @@ def get_conn():
 
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with get_conn() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id       TEXT PRIMARY KEY,
-                title    TEXT NOT NULL,
-                type     TEXT NOT NULL,
-                size     TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                stage    TEXT NOT NULL DEFAULT 'user-spec',
-                why      TEXT DEFAULT '',
-                deadline TEXT DEFAULT '',
-                created  TEXT NOT NULL,
-                updated  TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS counter (
-                id    INTEGER PRIMARY KEY DEFAULT 1,
-                value INTEGER DEFAULT 0
-            );
-            INSERT OR IGNORE INTO counter (id, value) VALUES (1, 0);
-            CREATE TABLE IF NOT EXISTS users (
-                chat_id  INTEGER PRIMARY KEY,
-                username TEXT DEFAULT ''
-            );
-        """)
+    conn = get_conn()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id       TEXT PRIMARY KEY,
+            title    TEXT NOT NULL,
+            type     TEXT NOT NULL,
+            size     TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            stage    TEXT NOT NULL DEFAULT 'user-spec',
+            why      TEXT DEFAULT '',
+            deadline TEXT DEFAULT '',
+            created  TEXT NOT NULL,
+            updated  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS counter (
+            id    INTEGER PRIMARY KEY DEFAULT 1,
+            value INTEGER DEFAULT 0
+        );
+        INSERT OR IGNORE INTO counter (id, value) VALUES (1, 0);
+        CREATE TABLE IF NOT EXISTS users (
+            chat_id  INTEGER PRIMARY KEY,
+            username TEXT DEFAULT ''
+        );
+    """)
+    conn.close()
 
 
 def now() -> str:
@@ -96,64 +97,72 @@ def now() -> str:
 
 
 def next_task_id() -> str:
-    with get_conn() as conn:
-        conn.execute("UPDATE counter SET value = value + 1 WHERE id = 1")
-        row = conn.execute("SELECT value FROM counter WHERE id = 1").fetchone()
-        return f"TASK-{row['value']:03d}"
+    conn = get_conn()
+    conn.execute("UPDATE counter SET value = value + 1 WHERE id = 1")
+    row = conn.execute("SELECT value FROM counter WHERE id = 1").fetchone()
+    val = row["value"]
+    conn.close()
+    return f"TASK-{val:03d}"
 
 
 def db_add_task(task: dict):
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO tasks VALUES (:id,:title,:type,:size,:priority,:stage,:why,:deadline,:created,:updated)",
-            task,
-        )
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO tasks VALUES (:id,:title,:type,:size,:priority,:stage,:why,:deadline,:created,:updated)",
+        task,
+    )
+    conn.close()
 
 
 def db_get_tasks(stage: str = None) -> list:
-    with get_conn() as conn:
-        if stage:
-            rows = conn.execute(
-                "SELECT * FROM tasks WHERE stage=? ORDER BY created", (stage,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM tasks ORDER BY created"
-            ).fetchall()
-        return [dict(r) for r in rows]
+    conn = get_conn()
+    if stage:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE stage=? ORDER BY created", (stage,)
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM tasks ORDER BY created").fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
 
 
 def db_get_task(task_id: str) -> dict | None:
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        return dict(row) if row else None
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def db_update_task(task_id: str, **fields):
     fields["updated"] = now()
     set_clause = ", ".join(f"{k}=?" for k in fields)
     values = list(fields.values()) + [task_id]
-    with get_conn() as conn:
-        conn.execute(f"UPDATE tasks SET {set_clause} WHERE id=?", values)
+    conn = get_conn()
+    conn.execute(f"UPDATE tasks SET {set_clause} WHERE id=?", values)
+    conn.close()
 
 
 def db_delete_task(task_id: str):
-    with get_conn() as conn:
-        conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn = get_conn()
+    conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.close()
 
 
 def db_register_user(chat_id: int, username: str = ""):
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO users (chat_id, username) VALUES (?, ?)",
-            (chat_id, username or ""),
-        )
+    conn = get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO users (chat_id, username) VALUES (?, ?)",
+        (chat_id, username or ""),
+    )
+    conn.close()
 
 
 def db_get_users() -> list:
-    with get_conn() as conn:
-        rows = conn.execute("SELECT chat_id FROM users").fetchall()
-        return [r["chat_id"] for r in rows]
+    conn = get_conn()
+    rows = conn.execute("SELECT chat_id FROM users").fetchall()
+    conn.close()
+    return [r["chat_id"] for r in rows]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -163,7 +172,6 @@ def parse_date(raw: str) -> str | None:
             return datetime.strptime(raw.strip(), fmt).strftime("%d.%m.%Y")
         except ValueError:
             continue
-    # dd.mm without year — assume current year
     try:
         dt = datetime.strptime(raw.strip(), "%d.%m").replace(year=datetime.now().year)
         return dt.strftime("%d.%m.%Y")
@@ -175,8 +183,8 @@ def deadline_status(deadline_str: str) -> str:
     if not deadline_str:
         return ""
     try:
-        dl    = datetime.strptime(deadline_str, "%d.%m.%Y").date()
-        days  = (dl - datetime.now().date()).days
+        dl   = datetime.strptime(deadline_str, "%d.%m.%Y").date()
+        days = (dl - datetime.now().date()).days
         if days < 0:
             return f"\n⏰ Дедлайн: {deadline_str} — *просрочено на {-days} дн.*"
         elif days == 0:
@@ -202,76 +210,156 @@ def format_card(task: dict) -> str:
 
 
 def task_buttons(task: dict) -> InlineKeyboardMarkup:
+    """
+    Кнопка ✅ Готово — только на этапе deploy (последнем перед done).
+    Сразу после создания задачи кнопки завершения нет.
+    """
     tid     = task["id"]
     cur_idx = PIPELINE.index(task["stage"])
     rows    = []
 
+    # Кнопка перехода на следующий этап
     if cur_idx < len(PIPELINE) - 1:
         next_stage = PIPELINE[cur_idx + 1]
-        rows.append([InlineKeyboardButton(
-            f"➡️ {STAGE_LABEL[next_stage]}", callback_data=f"move:{tid}"
-        )])
+        label = "✅ Завершить" if next_stage == "done" else f"➡️ {STAGE_LABEL[next_stage]}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"move:{tid}")])
 
-    bottom = []
-    if task["stage"] != "done":
-        bottom.append(InlineKeyboardButton("✅ Готово", callback_data=f"done:{tid}"))
-    bottom.append(InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{tid}"))
+    # Нижний ряд: удалить + меню
+    bottom = [
+        InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{tid}"),
+        InlineKeyboardButton("🏠 Меню",   callback_data="menu:main"),
+    ]
     rows.append(bottom)
 
     return InlineKeyboardMarkup(rows)
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить задачу", callback_data="menu:add")],
+        [
+            InlineKeyboardButton("📋 Активные",      callback_data="menu:list"),
+            InlineKeyboardButton("📊 Доска",          callback_data="menu:board"),
+        ],
+        [
+            InlineKeyboardButton("✅ Выполненные",    callback_data="menu:done_list"),
+            InlineKeyboardButton("⏰ Просроченные",   callback_data="menu:overdue"),
+        ],
+        [InlineKeyboardButton("🗓 Запланированные",  callback_data="menu:planned")],
+    ])
+
+# ── Menu text ─────────────────────────────────────────────────────────────────
+
+MENU_TEXT = "👋 *Task Tracker*\nВыбери действие:"
 
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_register_user(update.effective_chat.id, update.effective_user.username or "")
-    await update.message.reply_text(
-        "👋 *Task Tracker Bot*\n\n"
-        "/add — добавить задачу\n"
-        "/list — активные задачи\n"
-        "/board — доска по этапам\n"
-        "/upcoming — задачи с дедлайном (7 дней)\n"
-        "/help — справка",
-        parse_mode="Markdown",
-    )
+    await update.message.reply_text(MENU_TEXT, parse_mode="Markdown",
+                                    reply_markup=main_menu_keyboard())
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "*Команды:*\n\n"
+        "/start — главное меню\n"
         "/add — добавить задачу\n"
-        "/list — активные задачи\n"
-        "/board — канбан-доска\n"
-        "/upcoming — ближайшие дедлайны\n"
-        "/cancel — отменить добавление задачи\n\n"
+        "/cancel — отменить добавление\n\n"
         "*Этапы:*\n"
         "📝 → 🗺 → ⚙️ → 🔍 → 👁 → 🚀 → ✅\n\n"
-        "*Дедлайн:* формат `25.05.2026`\n"
-        "Напоминание придёт в 9:00 за день до дедлайна и в день дедлайна.",
+        "Кнопка *Завершить* появляется только на этапе 🚀 Деплой.\n"
+        "Напоминание о дедлайне приходит в 9:00 за день до и в день дедлайна.",
         parse_mode="Markdown",
     )
 
+# ── List views ────────────────────────────────────────────────────────────────
 
-async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db_register_user(update.effective_chat.id, update.effective_user.username or "")
+async def show_active(target, edit: bool = False):
     tasks = [t for t in db_get_tasks() if t["stage"] != "done"]
-
     if not tasks:
-        await update.message.reply_text("Активных задач нет.\n/add — добавить первую.")
+        text = "Активных задач нет."
+        kb   = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:main")]])
+        if edit:
+            await target.edit_message_text(text, reply_markup=kb)
+        else:
+            await target.reply_text(text, reply_markup=kb)
         return
 
-    await update.message.reply_text(f"*Активных задач: {len(tasks)}*", parse_mode="Markdown")
+    header = f"*Активных задач: {len(tasks)}*"
+    if edit:
+        await target.edit_message_text(header, parse_mode="Markdown",
+                                       reply_markup=InlineKeyboardMarkup([[
+                                           InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                                       ]]))
+    else:
+        await target.reply_text(header, parse_mode="Markdown")
+
     for task in tasks:
-        await update.message.reply_text(
-            format_card(task),
-            parse_mode="Markdown",
-            reply_markup=task_buttons(task),
-        )
+        await target.message.reply_text(format_card(task), parse_mode="Markdown",
+                                        reply_markup=task_buttons(task)) \
+            if edit else \
+            await target.reply_text(format_card(task), parse_mode="Markdown",
+                                    reply_markup=task_buttons(task))
 
 
-async def cmd_board(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db_register_user(update.effective_chat.id, update.effective_user.username or "")
+async def show_done_list(msg):
+    tasks = [t for t in db_get_tasks() if t["stage"] == "done"]
+    kb    = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:main")]])
+    if not tasks:
+        await msg.reply_text("Выполненных задач пока нет.", reply_markup=kb)
+        return
+    await msg.reply_text(f"*Выполненных задач: {len(tasks)}*", parse_mode="Markdown")
+    for task in tasks:
+        await msg.reply_text(format_card(task), parse_mode="Markdown", reply_markup=kb)
+
+
+async def show_overdue(msg):
+    today = datetime.now().date()
+    tasks = []
+    for t in db_get_tasks():
+        if t["stage"] == "done" or not t.get("deadline"):
+            continue
+        parsed = parse_date(t["deadline"])
+        if parsed:
+            days = (datetime.strptime(parsed, "%d.%m.%Y").date() - today).days
+            if days < 0:
+                tasks.append((days, t))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:main")]])
+    if not tasks:
+        await msg.reply_text("Просроченных задач нет. 🎉", reply_markup=kb)
+        return
+    tasks.sort(key=lambda x: x[0])
+    await msg.reply_text(f"*Просроченных задач: {len(tasks)}*", parse_mode="Markdown")
+    for _, task in tasks:
+        await msg.reply_text(format_card(task), parse_mode="Markdown",
+                             reply_markup=task_buttons(task))
+
+
+async def show_planned(msg):
+    today = datetime.now().date()
+    tasks = []
+    for t in db_get_tasks():
+        if t["stage"] == "done" or not t.get("deadline"):
+            continue
+        parsed = parse_date(t["deadline"])
+        if parsed:
+            days = (datetime.strptime(parsed, "%d.%m.%Y").date() - today).days
+            if days >= 0:
+                tasks.append((days, t))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:main")]])
+    if not tasks:
+        await msg.reply_text("Нет запланированных задач с дедлайном.", reply_markup=kb)
+        return
+    tasks.sort(key=lambda x: x[0])
+    await msg.reply_text(f"*Запланированных задач: {len(tasks)}*", parse_mode="Markdown")
+    for _, task in tasks:
+        await msg.reply_text(format_card(task), parse_mode="Markdown",
+                             reply_markup=task_buttons(task))
+
+
+async def show_board(msg):
     tasks = [t for t in db_get_tasks() if t["stage"] != "done"]
-
     lines = ["*Доска задач*\n"]
     for stage in PIPELINE[:-1]:
         stage_tasks = [t for t in tasks if t["stage"] == stage]
@@ -283,40 +371,8 @@ async def cmd_board(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append("  —")
         lines.append("")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-
-
-async def cmd_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db_register_user(update.effective_chat.id, update.effective_user.username or "")
-    today   = datetime.now().date()
-    tasks   = db_get_tasks()
-    hitting = []
-
-    for task in tasks:
-        if task["stage"] == "done" or not task.get("deadline"):
-            continue
-        parsed = parse_date(task["deadline"])
-        if not parsed:
-            continue
-        days = (datetime.strptime(parsed, "%d.%m.%Y").date() - today).days
-        if days <= 7:
-            hitting.append((days, task))
-
-    if not hitting:
-        await update.message.reply_text("Нет задач с дедлайном в ближайшие 7 дней. 🎉")
-        return
-
-    hitting.sort(key=lambda x: x[0])
-    await update.message.reply_text(
-        f"*Задачи с дедлайном (7 дней): {len(hitting)}*", parse_mode="Markdown"
-    )
-    for _, task in hitting:
-        await update.message.reply_text(
-            format_card(task),
-            parse_mode="Markdown",
-            reply_markup=task_buttons(task),
-        )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu:main")]])
+    await msg.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
 
 # ── Add task — conversation ───────────────────────────────────────────────────
 
@@ -330,11 +386,20 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return TITLE
 
 
+async def add_start_from_menu(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await query.edit_message_text(
+        "➕ *Новая задача*\n\nКак называется задача? Напиши кратко.",
+        parse_mode="Markdown",
+    )
+    return TITLE
+
+
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["title"] = update.message.text.strip()
     kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✨ Фича",       callback_data="type:feature"),
-        InlineKeyboardButton("🐛 Баг",        callback_data="type:bug"),
+        InlineKeyboardButton("✨ Фича",        callback_data="type:feature"),
+        InlineKeyboardButton("🐛 Баг",         callback_data="type:bug"),
         InlineKeyboardButton("🔧 Рефакторинг", callback_data="type:refactoring"),
     ]])
     await update.message.reply_text("Тип задачи?", reply_markup=kb)
@@ -411,8 +476,7 @@ async def add_deadline_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="skip:deadline")]])
         await update.message.reply_text(
             "Не понял дату. Попробуй формат `25.05.2026`\n_(или нажми Пропустить)_",
-            parse_mode="Markdown",
-            reply_markup=kb,
+            parse_mode="Markdown", reply_markup=kb,
         )
         return DEADLINE
     context.user_data["deadline"] = parsed
@@ -446,30 +510,189 @@ async def _finish_add(msg, context: ContextTypes.DEFAULT_TYPE, edit: bool):
     db_add_task(task)
 
     text = f"✅ *Задача создана!*\n\n{format_card(task)}"
+    kb   = task_buttons(task)
     if edit:
-        await msg.edit_text(text, parse_mode="Markdown", reply_markup=task_buttons(task))
+        await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     else:
-        await msg.reply_text(text, parse_mode="Markdown", reply_markup=task_buttons(task))
+        await msg.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
     context.user_data.clear()
 
 
 async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("Отменено.")
+    await update.message.reply_text(
+        "Отменено.", reply_markup=main_menu_keyboard()
+    )
     return ConversationHandler.END
 
-# ── Inline button callbacks ───────────────────────────────────────────────────
+# ── Callback handler ──────────────────────────────────────────────────────────
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query  = update.callback_query
     await query.answer()
+    data   = query.data
 
-    action, task_id = query.data.split(":", 1)
+    # ── Меню ──────────────────────────────────────────────────────────────────
+    if data == "menu:main":
+        await query.edit_message_text(MENU_TEXT, parse_mode="Markdown",
+                                      reply_markup=main_menu_keyboard())
+        return
+
+    if data == "menu:add":
+        # Запускаем диалог добавления через редактирование сообщения
+        context.user_data.clear()
+        context.user_data["_adding"] = True
+        await query.edit_message_text(
+            "➕ *Новая задача*\n\nКак называется задача? Напиши кратко.",
+            parse_mode="Markdown",
+        )
+        # Устанавливаем состояние через user_data
+        context.user_data["_conv_state"] = TITLE
+        return
+
+    if data == "menu:list":
+        tasks = [t for t in db_get_tasks() if t["stage"] != "done"]
+        if not tasks:
+            await query.edit_message_text(
+                "Активных задач нет.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("➕ Добавить", callback_data="menu:add"),
+                    InlineKeyboardButton("🏠 Меню",    callback_data="menu:main"),
+                ]])
+            )
+            return
+        await query.edit_message_text(
+            f"*Активных задач: {len(tasks)}*", parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
+        for task in tasks:
+            await query.message.reply_text(format_card(task), parse_mode="Markdown",
+                                           reply_markup=task_buttons(task))
+        return
+
+    if data == "menu:board":
+        tasks = [t for t in db_get_tasks() if t["stage"] != "done"]
+        lines = ["*Доска задач*\n"]
+        for stage in PIPELINE[:-1]:
+            stage_tasks = [t for t in tasks if t["stage"] == stage]
+            lines.append(f"{STAGE_LABEL[stage]} *({len(stage_tasks)})*")
+            for t in stage_tasks:
+                dl = f" ⏰{t['deadline']}" if t.get("deadline") else ""
+                lines.append(f"  {PRIORITY_ICON[t['priority']]} `{t['id']}` {t['title'][:35]}{dl}")
+            if not stage_tasks:
+                lines.append("  —")
+            lines.append("")
+        await query.edit_message_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
+        return
+
+    if data == "menu:done_list":
+        tasks = [t for t in db_get_tasks() if t["stage"] == "done"]
+        if not tasks:
+            await query.edit_message_text(
+                "Выполненных задач пока нет.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                ]])
+            )
+            return
+        await query.edit_message_text(
+            f"*Выполненных задач: {len(tasks)}*", parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
+        for task in tasks:
+            await query.message.reply_text(format_card(task), parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                ]])
+            )
+        return
+
+    if data == "menu:overdue":
+        today = datetime.now().date()
+        tasks = []
+        for t in db_get_tasks():
+            if t["stage"] == "done" or not t.get("deadline"):
+                continue
+            parsed = parse_date(t["deadline"])
+            if parsed:
+                days = (datetime.strptime(parsed, "%d.%m.%Y").date() - today).days
+                if days < 0:
+                    tasks.append((days, t))
+        if not tasks:
+            await query.edit_message_text(
+                "Просроченных задач нет. 🎉",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                ]])
+            )
+            return
+        tasks.sort(key=lambda x: x[0])
+        await query.edit_message_text(
+            f"*Просроченных задач: {len(tasks)}*", parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
+        for _, task in tasks:
+            await query.message.reply_text(format_card(task), parse_mode="Markdown",
+                                           reply_markup=task_buttons(task))
+        return
+
+    if data == "menu:planned":
+        today = datetime.now().date()
+        tasks = []
+        for t in db_get_tasks():
+            if t["stage"] == "done" or not t.get("deadline"):
+                continue
+            parsed = parse_date(t["deadline"])
+            if parsed:
+                days = (datetime.strptime(parsed, "%d.%m.%Y").date() - today).days
+                if days >= 0:
+                    tasks.append((days, t))
+        if not tasks:
+            await query.edit_message_text(
+                "Нет задач с дедлайном.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                ]])
+            )
+            return
+        tasks.sort(key=lambda x: x[0])
+        await query.edit_message_text(
+            f"*Запланированных задач: {len(tasks)}*", parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
+        for _, task in tasks:
+            await query.message.reply_text(format_card(task), parse_mode="Markdown",
+                                           reply_markup=task_buttons(task))
+        return
+
+    # ── Действия с задачами ───────────────────────────────────────────────────
+    if ":" not in data:
+        return
+
+    action, task_id = data.split(":", 1)
     task = db_get_task(task_id)
 
     if not task:
-        await query.edit_message_text("Задача не найдена.")
+        await query.edit_message_text(
+            "Задача не найдена.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
         return
 
     if action == "move":
@@ -478,18 +701,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_stage = PIPELINE[cur_idx + 1]
             db_update_task(task_id, stage=new_stage)
             task = db_get_task(task_id)
-            await query.edit_message_text(
-                format_card(task),
-                parse_mode="Markdown",
-                reply_markup=task_buttons(task),
-            )
-
-    elif action == "done":
-        db_update_task(task_id, stage="done")
-        await query.edit_message_text(
-            f"✅ *{task_id} завершена!*\n_{task['title']}_",
-            parse_mode="Markdown",
-        )
+            if task["stage"] == "done":
+                await query.edit_message_text(
+                    f"✅ *{task_id} завершена!*\n_{task['title']}_",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+                    ]])
+                )
+            else:
+                await query.edit_message_text(
+                    format_card(task), parse_mode="Markdown",
+                    reply_markup=task_buttons(task),
+                )
 
     elif action == "del":
         kb = InlineKeyboardMarkup([[
@@ -498,22 +722,135 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         await query.edit_message_text(
             f"Удалить задачу *{task_id}*?\n_{task['title']}_",
-            parse_mode="Markdown",
-            reply_markup=kb,
+            parse_mode="Markdown", reply_markup=kb,
         )
 
     elif action == "delok":
         db_delete_task(task_id)
-        await query.edit_message_text(f"🗑 Задача *{task_id}* удалена.", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"🗑 Задача *{task_id}* удалена.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Меню", callback_data="menu:main")
+            ]])
+        )
 
     elif action == "delno":
         await query.edit_message_text(
-            format_card(task),
-            parse_mode="Markdown",
+            format_card(task), parse_mode="Markdown",
             reply_markup=task_buttons(task),
         )
 
-# ── Deadline reminder job ─────────────────────────────────────────────────────
+# ── Text handler (for add via menu button) ────────────────────────────────────
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текст когда пользователь добавляет задачу через кнопку меню."""
+    state = context.user_data.get("_conv_state")
+    if state == TITLE:
+        context.user_data["title"] = update.message.text.strip()
+        context.user_data["_conv_state"] = TASK_TYPE
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✨ Фича",        callback_data="mtype:feature"),
+            InlineKeyboardButton("🐛 Баг",         callback_data="mtype:bug"),
+            InlineKeyboardButton("🔧 Рефакторинг", callback_data="mtype:refactoring"),
+        ]])
+        await update.message.reply_text("Тип задачи?", reply_markup=kb)
+    elif state == WHY:
+        context.user_data["why"] = update.message.text.strip()
+        context.user_data["_conv_state"] = DEADLINE
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
+        await update.message.reply_text(
+            "Дедлайн? Напиши дату в формате `25.05.2026`\n_(или нажми Пропустить)_",
+            parse_mode="Markdown", reply_markup=kb,
+        )
+    elif state == DEADLINE:
+        parsed = parse_date(update.message.text)
+        if not parsed:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
+            await update.message.reply_text(
+                "Не понял дату. Попробуй `25.05.2026`\n_(или нажми Пропустить)_",
+                parse_mode="Markdown", reply_markup=kb,
+            )
+            return
+        context.user_data["deadline"] = parsed
+        await _menu_finish_add(update.message, context)
+
+
+async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает кнопки во время добавления задачи через меню."""
+    query = update.callback_query
+    await query.answer()
+    data  = query.data
+    state = context.user_data.get("_conv_state")
+
+    if data.startswith("mtype:") and state == TASK_TYPE:
+        context.user_data["type"] = data.split(":")[1]
+        context.user_data["_conv_state"] = SIZE
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("S — до 1ч",  callback_data="msize:S"),
+            InlineKeyboardButton("M — 2–4ч",   callback_data="msize:M"),
+            InlineKeyboardButton("L — полдня", callback_data="msize:L"),
+        ]])
+        await query.edit_message_text("Размер задачи?", reply_markup=kb)
+
+    elif data.startswith("msize:") and state == SIZE:
+        context.user_data["size"] = data.split(":")[1]
+        context.user_data["_conv_state"] = PRIORITY
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔴 Высокий", callback_data="mpriority:high"),
+            InlineKeyboardButton("🟡 Средний", callback_data="mpriority:medium"),
+            InlineKeyboardButton("🟢 Низкий",  callback_data="mpriority:low"),
+        ]])
+        await query.edit_message_text("Приоритет?", reply_markup=kb)
+
+    elif data.startswith("mpriority:") and state == PRIORITY:
+        context.user_data["priority"] = data.split(":")[1]
+        context.user_data["_conv_state"] = WHY
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:why")]])
+        await query.edit_message_text(
+            "Зачем эта задача? Напиши кратко.\n_(или нажми Пропустить)_",
+            parse_mode="Markdown", reply_markup=kb,
+        )
+
+    elif data == "mskip:why" and state == WHY:
+        context.user_data["why"] = ""
+        context.user_data["_conv_state"] = DEADLINE
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
+        await query.edit_message_text(
+            "Дедлайн? Напиши дату в формате `25.05.2026`\n_(или нажми Пропустить)_",
+            parse_mode="Markdown", reply_markup=kb,
+        )
+
+    elif data == "mskip:deadline" and state == DEADLINE:
+        context.user_data["deadline"] = ""
+        await _menu_finish_add(query.message, context, edit=True)
+
+
+async def _menu_finish_add(msg, context, edit=False):
+    ud      = context.user_data
+    task_id = next_task_id()
+    task    = {
+        "id":       task_id,
+        "title":    ud["title"],
+        "type":     ud["type"],
+        "size":     ud["size"],
+        "priority": ud["priority"],
+        "stage":    "user-spec",
+        "why":      ud.get("why", ""),
+        "deadline": ud.get("deadline", ""),
+        "created":  now(),
+        "updated":  now(),
+    }
+    db_add_task(task)
+    context.user_data.clear()
+
+    text = f"✅ *Задача создана!*\n\n{format_card(task)}"
+    if edit:
+        await msg.edit_text(text, parse_mode="Markdown", reply_markup=task_buttons(task))
+    else:
+        await msg.reply_text(text, parse_mode="Markdown", reply_markup=task_buttons(task))
+
+# ── Reminder job ──────────────────────────────────────────────────────────────
 
 async def check_deadlines(context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().date()
@@ -551,6 +888,7 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
+    # ConversationHandler для /add команды
     conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
         states={
@@ -570,15 +908,19 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_add)],
     )
 
-    app.add_handler(CommandHandler("start",    cmd_start))
-    app.add_handler(CommandHandler("help",     cmd_help))
-    app.add_handler(CommandHandler("list",     cmd_list))
-    app.add_handler(CommandHandler("board",    cmd_board))
-    app.add_handler(CommandHandler("upcoming", cmd_upcoming))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help",  cmd_help))
     app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(
-        callback_handler, pattern="^(move|done|del|delok|delno):"
-    ))
+
+    # Кнопки меню во время добавления задачи через меню
+    app.add_handler(CallbackQueryHandler(menu_callback_handler,
+                    pattern="^(mtype:|msize:|mpriority:|mskip:)"))
+
+    # Основной обработчик кнопок
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Текст во время добавления задачи через меню
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
     # Напоминания каждый день в 9:00
     app.job_queue.run_daily(check_deadlines, time=dtime(9, 0))
@@ -589,4 +931,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
