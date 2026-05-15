@@ -47,13 +47,13 @@ STAGE_LABEL = {
     "done":        "✅ Готово",
 }
 
-TYPE_LABEL     = {"feature": "✨ Фича", "bug": "🐛 Баг", "refactoring": "🔧 Рефакторинг"}
 SIZE_LABEL     = {"S": "S — до 1ч", "M": "M — 2–4ч", "L": "L — полдня"}
 PRIORITY_LABEL = {"high": "🔴 Высокий", "medium": "🟡 Средний", "low": "🟢 Низкий"}
 PRIORITY_ICON  = {"high": "🔴", "medium": "🟡", "low": "🟢"}
 
 # Conversation states
-TITLE, TASK_TYPE, SIZE, PRIORITY, WHY, DEADLINE = range(6)
+TITLE, WHY, SIZE, PRIORITY, DEADLINE = range(5)
+TASK_TYPE = 99  # не используется, оставлен для совместимости
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
@@ -198,13 +198,11 @@ def deadline_status(deadline_str: str) -> str:
 
 
 def format_card(task: dict) -> str:
-    why_str = f"\n💬 *Зачем:* {task['why']}" if task.get("why") else ""
     return (
         f"*{task['id']}* — {task['title']}\n"
         f"{STAGE_LABEL[task['stage']]}\n"
-        f"{TYPE_LABEL[task['type']]}  •  {SIZE_LABEL[task['size']]}  •  "
-        f"{PRIORITY_LABEL[task['priority']]}"
-        f"{why_str}"
+        f"{SIZE_LABEL[task['size']]}  •  {PRIORITY_LABEL[task['priority']]}\n"
+        f"💬 {task['why']}"
         f"{deadline_status(task.get('deadline', ''))}"
     )
 
@@ -397,25 +395,24 @@ async def add_start_from_menu(query, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["title"] = update.message.text.strip()
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✨ Фича",        callback_data="type:feature"),
-        InlineKeyboardButton("🐛 Баг",         callback_data="type:bug"),
-        InlineKeyboardButton("🔧 Рефакторинг", callback_data="type:refactoring"),
-    ]])
-    await update.message.reply_text("Тип задачи?", reply_markup=kb)
-    return TASK_TYPE
+    await update.message.reply_text(
+        "Опиши задачу подробнее — что нужно сделать и зачем?"
+    )
+    return WHY
 
 
-async def add_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["type"] = query.data.split(":")[1]
+async def add_why_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("Описание обязательно. Напиши хотя бы пару слов.")
+        return WHY
+    context.user_data["why"] = text
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("S — до 1ч",  callback_data="size:S"),
         InlineKeyboardButton("M — 2–4ч",   callback_data="size:M"),
         InlineKeyboardButton("L — полдня", callback_data="size:L"),
     ]])
-    await query.edit_message_text("Размер задачи?", reply_markup=kb)
+    await update.message.reply_text("Сколько времени займёт?", reply_markup=kb)
     return SIZE
 
 
@@ -436,27 +433,6 @@ async def add_priority(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     context.user_data["priority"] = query.data.split(":")[1]
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Пропустить", callback_data="skip:why")
-    ]])
-    await query.edit_message_text(
-        "Зачем эта задача? Напиши кратко.\n_(или нажми Пропустить)_",
-        parse_mode="Markdown",
-        reply_markup=kb,
-    )
-    return WHY
-
-
-async def add_why_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["why"] = update.message.text.strip()
-    await _ask_deadline(update.message, edit=False)
-    return DEADLINE
-
-
-async def add_why_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["why"] = ""
     await _ask_deadline(query.message, edit=True)
     return DEADLINE
 
@@ -498,7 +474,7 @@ async def _finish_add(msg, context: ContextTypes.DEFAULT_TYPE, edit: bool):
     task    = {
         "id":       task_id,
         "title":    ud["title"],
-        "type":     ud["type"],
+        "type":     "task",
         "size":     ud["size"],
         "priority": ud["priority"],
         "stage":    "user-spec",
@@ -748,21 +724,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("_conv_state")
     if state == TITLE:
         context.user_data["title"] = update.message.text.strip()
-        context.user_data["_conv_state"] = TASK_TYPE
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✨ Фича",        callback_data="mtype:feature"),
-            InlineKeyboardButton("🐛 Баг",         callback_data="mtype:bug"),
-            InlineKeyboardButton("🔧 Рефакторинг", callback_data="mtype:refactoring"),
-        ]])
-        await update.message.reply_text("Тип задачи?", reply_markup=kb)
-    elif state == WHY:
-        context.user_data["why"] = update.message.text.strip()
-        context.user_data["_conv_state"] = DEADLINE
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
+        context.user_data["_conv_state"] = WHY
         await update.message.reply_text(
-            "Дедлайн? Напиши дату в формате `25.05.2026`\n_(или нажми Пропустить)_",
-            parse_mode="Markdown", reply_markup=kb,
+            "Опиши задачу подробнее — что нужно сделать и зачем?"
         )
+    elif state == WHY:
+        text = update.message.text.strip()
+        if not text:
+            await update.message.reply_text("Описание обязательно. Напиши хотя бы пару слов.")
+            return
+        context.user_data["why"] = text
+        context.user_data["_conv_state"] = SIZE
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("S — до 1ч",  callback_data="msize:S"),
+            InlineKeyboardButton("M — 2–4ч",   callback_data="msize:M"),
+            InlineKeyboardButton("L — полдня", callback_data="msize:L"),
+        ]])
+        await update.message.reply_text("Сколько времени займёт?", reply_markup=kb)
     elif state == DEADLINE:
         parsed = parse_date(update.message.text)
         if not parsed:
@@ -783,17 +761,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     data  = query.data
     state = context.user_data.get("_conv_state")
 
-    if data.startswith("mtype:") and state == TASK_TYPE:
-        context.user_data["type"] = data.split(":")[1]
-        context.user_data["_conv_state"] = SIZE
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("S — до 1ч",  callback_data="msize:S"),
-            InlineKeyboardButton("M — 2–4ч",   callback_data="msize:M"),
-            InlineKeyboardButton("L — полдня", callback_data="msize:L"),
-        ]])
-        await query.edit_message_text("Размер задачи?", reply_markup=kb)
-
-    elif data.startswith("msize:") and state == SIZE:
+    if data.startswith("msize:") and state == SIZE:
         context.user_data["size"] = data.split(":")[1]
         context.user_data["_conv_state"] = PRIORITY
         kb = InlineKeyboardMarkup([[
@@ -812,15 +780,6 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown", reply_markup=kb,
         )
 
-    elif data == "mskip:why" and state == WHY:
-        context.user_data["why"] = ""
-        context.user_data["_conv_state"] = DEADLINE
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
-        await query.edit_message_text(
-            "Дедлайн? Напиши дату в формате `25.05.2026`\n_(или нажми Пропустить)_",
-            parse_mode="Markdown", reply_markup=kb,
-        )
-
     elif data == "mskip:deadline" and state == DEADLINE:
         context.user_data["deadline"] = ""
         await _menu_finish_add(query.message, context, edit=True)
@@ -832,7 +791,7 @@ async def _menu_finish_add(msg, context, edit=False):
     task    = {
         "id":       task_id,
         "title":    ud["title"],
-        "type":     ud["type"],
+        "type":     "task",
         "size":     ud["size"],
         "priority": ud["priority"],
         "stage":    "user-spec",
@@ -892,14 +851,10 @@ def main():
     conv = ConversationHandler(
         entry_points=[CommandHandler("add", add_start)],
         states={
-            TITLE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
-            TASK_TYPE: [CallbackQueryHandler(add_type,         pattern="^type:")],
-            SIZE:      [CallbackQueryHandler(add_size,         pattern="^size:")],
-            PRIORITY:  [CallbackQueryHandler(add_priority,     pattern="^priority:")],
-            WHY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_why_text),
-                CallbackQueryHandler(add_why_skip, pattern="^skip:why$"),
-            ],
+            TITLE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, add_title)],
+            WHY:      [MessageHandler(filters.TEXT & ~filters.COMMAND, add_why_text)],
+            SIZE:     [CallbackQueryHandler(add_size,     pattern="^size:")],
+            PRIORITY: [CallbackQueryHandler(add_priority, pattern="^priority:")],
             DEADLINE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_deadline_text),
                 CallbackQueryHandler(add_deadline_skip, pattern="^skip:deadline$"),
@@ -914,7 +869,7 @@ def main():
 
     # Кнопки меню во время добавления задачи через меню
     app.add_handler(CallbackQueryHandler(menu_callback_handler,
-                    pattern="^(mtype:|msize:|mpriority:|mskip:)"))
+                    pattern="^(msize:|mpriority:|mskip:)"))
 
     # Основной обработчик кнопок
     app.add_handler(CallbackQueryHandler(callback_handler))
