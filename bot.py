@@ -773,10 +773,10 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("mpriority:") and state == PRIORITY:
         context.user_data["priority"] = data.split(":")[1]
-        context.user_data["_conv_state"] = WHY
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:why")]])
+        context.user_data["_conv_state"] = DEADLINE
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить", callback_data="mskip:deadline")]])
         await query.edit_message_text(
-            "Зачем эта задача? Напиши кратко.\n_(или нажми Пропустить)_",
+            "Дедлайн? Напиши дату в формате `25.05.2026`\n_(или нажми Пропустить)_",
             parse_mode="Markdown", reply_markup=kb,
         )
 
